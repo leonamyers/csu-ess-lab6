@@ -1,0 +1,61 @@
+---
+title: "lab6"
+author: "Leona Myers"
+date: 3/27/2025
+format: html
+execute: 
+  echo: true
+---
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(powerjoin)
+library(glue)
+library(vip)
+library(baguette)
+library(ggthemes)
+```
+
+```{r}
+root  <- 'https://gdex.ucar.edu/dataset/camels/file'
+```
+
+```{r}
+download.file('https://gdex.ucar.edu/dataset/camels/file/camels_attributes_v2.0.pdf', 
+              'data/camels_attributes_v2.0.pdf')
+```
+```{r}
+types <- c("clim", "geol", "soil", "topo", "vege", "hydro")
+```
+
+```{r}
+# Where the files live online ...
+remote_files  <- glue('{root}/camels_{types}.txt')
+# where we want to download the data ...
+local_files   <- glue('data/camels_{types}.txt')
+```
+
+```{r}
+walk2(remote_files, local_files, download.file, quiet = TRUE)
+```
+
+```{r}
+# Read and merge data
+camels <- map(local_files, read_delim, show_col_types = FALSE) 
+```
+
+```{r}
+camels <- power_full_join(camels ,by = 'gauge_id')
+```
+
+# Question 1: Your Turn
+## zero_q_freq represents 
+```{r}
+ggplot(data = camels, aes(x = gauge_lon, y = gauge_lat)) +
+  borders("state", colour = "gray50") +
+  geom_point(aes(color = q_mean)) +
+  scale_color_gradient(low = "pink", high = "dodgerblue") +
+  ggthemes::theme_map()
+```
+# Question 2: Your Turn
