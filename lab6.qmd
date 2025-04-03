@@ -1,7 +1,9 @@
 ---
-title: "lab6"
-author: "Leona Myers"
-date: "04/02/2025"
+title: "Lab 6: Machiene Learning"
+subtitle: "Ecosystem Science and Sustainability 330"
+author: 
+- name: "Leona Myers"
+  email: "leona18@colostate.edu"
 format: html
 execute:
   echo: true
