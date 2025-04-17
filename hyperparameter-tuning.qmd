@@ -1,5 +1,6 @@
 ---
 title: "hyperparameter-tuning"
+subtitle: "Ecosystem Science and Sustainability 330"
 author: "Leona Myers"
 date: 4/16/2025
 format: html
