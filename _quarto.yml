@@ -1,5 +1,5 @@
 project: 
-  title: "lab6"
+  title: "hyperparamter-tuning"
   output-dir: docs
   type: website 
 format:

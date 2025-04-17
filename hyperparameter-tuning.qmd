@@ -1,0 +1,316 @@
+---
+title: "hyperparameter-tuning"
+author: "Leona Myers"
+date: 4/16/2025
+format: html
+exhecute:
+  echo: true
+---
+## Libraries
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(powerjoin)
+library(skimr)
+library(visdat)
+library(ggpubr)
+library(glue)
+```
+
+## Data Import/Tidy/Transform
+```{r}
+root  <- 'https://gdex.ucar.edu/dataset/camels/file'
+```
+
+```{r}
+download.file('https://gdex.ucar.edu/dataset/camels/file/camels_attributes_v2.0.pdf', 
+              'data/camels_attributes_v2.0.pdf')
+```
+
+```{r}
+types <- c("clim", "geol", "soil", "topo", "vege", "hydro")
+```
+
+```{r}
+remote_files  <- glue('{root}/camels_{types}.txt')
+
+local_files   <- glue('data/camels_{types}.txt')
+```
+
+```{r}
+walk2(remote_files, local_files, download.file, quiet = TRUE)
+```
+
+```{r}
+camels <- map(local_files, read_delim, show_col_types = FALSE) 
+```
+
+```{r}
+camels <- power_full_join(camels ,by = 'gauge_id')
+```
+
+```{r}
+glimpse(camels)
+skim(camels)
+vis_dat(camels)
+```
+```{r}
+
+camels_clean <- camels %>%
+  select(where(~!all(is.na(.))))
+
+camels_clean <- camels %>%
+  filter(!is.na(q_mean))
+
+camels_clean %>%
+  summarise(across(everything(), ~sum(is.na(.))))
+
+```
+
+## Data Spliting
+```{r}
+set.seed(123)
+
+camels_split <- initial_split(camels_clean, prop = 0.8)
+
+camels_train <- training(camels_split)
+camels_test  <- testing(camels_split)
+```
+
+## Feature Engineering
+```{r}
+library(recipes)
+
+camels_recipe <- recipe(q_mean ~ ., data = camels_train) %>%
+  step_rm(gauge_lat, gauge_lon, gauge_id) %>%
+  step_naomit(all_predictors()) %>%
+  step_novel(all_nominal_predictors()) %>%          
+  step_unknown(all_nominal_predictors()) %>%  
+  step_other(all_nominal_predictors(), threshold = 0.01) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+```
+
+## Resampling and Model Testing
+### 1. Build resamples
+```{r}
+set.seed(123)
+
+camels_folds <- vfold_cv(camels_train, v = 10)
+```
+### 2. Build 3 Candidtae Models
+```{r}
+linear_mod <- linear_reg() %>%
+  set_engine("lm") %>%
+  set_mode("regression")
+```
+
+```{r}
+rf_mod <- rand_forest(trees = 500) %>%
+  set_engine("ranger") %>%
+  set_mode("regression")
+```
+
+```{r}
+boost_mod <- boost_tree(trees = 1000, learn_rate = 0.01) %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+```
+### 3. Test the models
+```{r}
+library(workflowsets)
+
+camels_workflows <- workflow_set(
+  preproc = list(camels_recipe = camels_recipe),
+  models = list(
+    linear = linear_mod,
+    random_forest = rf_mod,
+    boosted_tree = boost_mod
+  )
+)
+```
+
+```{r}
+set.seed(123)
+camels_results <- camels_workflows %>%
+  workflow_map(resamples = camels_folds,
+               control = control_resamples(save_pred = TRUE))
+```
+
+```{r}
+autoplot(camels_results)
+```
+
+### 4. Model Selection
+##### The linear regression model is the best choice for predicting q_mean in this dataset because of its low RMSE and high R squared. 
+##### Model type: Linear regression
+##### Engine: lm
+##### Mode: Regression
+
+## Model Tuning
+### 1. Build a model for your chosen specification
+```{r}
+library(parsnip)
+library(tune)
+
+enet_model <- linear_reg(
+  mode = "regression",
+  penalty = tune(),    
+  mixture = tune()    
+) %>%
+  set_engine("glmnet")
+
+```
+
+### 2. Create a workflow
+```{r}
+library(workflows)
+
+enet_workflow <- workflow() %>%
+  add_model(enet_model) %>%
+  add_recipe(camels_recipe)
+```
+
+### 3. Check the tunables values/ranges
+```{r}
+library(tune)
+
+dials <- extract_parameter_set_dials(enet_workflow)
+
+dials$object
+
+```
+### 4. Define the search space
+```{r}
+library(dials)
+library(finetune)
+
+my.grid <- grid_space_filling(
+  dials,
+  size = 25
+)
+
+my.grid
+```
+### 5. Tune the Model
+```{r}
+library(tune)
+library(yardstick)
+library(ggplot2)
+
+model_params <- tune_grid(
+  enet_workflow,
+  resamples = camels_folds,
+  grid = my.grid,
+  metrics = metric_set(rmse, rsq, mae),
+  control = control_grid(save_pred = TRUE)
+)
+
+autoplot(model_params)
+```
+##### Amount of regularization: Most models cluster around very low penalty values and perform well across all metrics. As regularization increases performace drops sharply (RMSE and MAE jump up and R squared falls)
+#### Proportion of Lasso Penalty: Performace is fairly consistent, but RMSE is lowest and R squared is highest between 0.25 and 0.5
+
+### 6. Check the skill of the tuned model
+```{r}
+collect_metrics(model_params)
+```
+
+```{r}
+collect_metrics(model_params) %>%
+  filter(.metric == "mae") %>%
+  arrange(mean)
+```
+```{r}
+show_best(model_params, metric = "mae")
+```
+##### The lowest MAE is achieved when penalty is .00825 and a mixture of lasso and ridhe is 0.72 (72% lass and 28% ridge)
+```{r}
+hp_best <- select_best(model_params, metric = "mae")
+```
+
+### 7. Finalize your model
+```{r}
+final_enet_workflow <- finalize_workflow(
+  enet_workflow,
+  hp_best
+)
+```
+
+## Final Model Verification
+```{r}
+final_fit <- last_fit(
+  final_enet_workflow,
+  split = camels_split
+)
+```
+
+```{r}
+collect_metrics(final_fit)
+```
+##### The RSME indicates that the models predictions are 0.16 units from the mean, while the rsq indicates %98.7 of the variation in the mean is explained by the predictors. The test performace is very close to the training performance. 
+```{r}
+final_predictions <- collect_predictions(final_fit)
+```
+
+```{r}
+library(ggplot2)
+
+ggplot(final_predictions, aes(x = .pred, y = .pred)) +
+  geom_point(alpha = 0.6, color = "#3182bd") +
+  geom_smooth(method = "lm", se = FALSE, color = "#de2d26", linetype = "dashed") +
+  geom_abline(intercept = 0, slope = 1, color = "#31a354", linetype = "solid") +
+  labs(
+    title = "Predicted vs. Actual on Test Data",
+    x = "Predicted Values",
+    y = "Actual Values"
+  ) +
+  theme_minimal()
+```
+## Building a Map
+```{r}
+final_fit <- fit(final_enet_workflow, data = camels_clean)
+```
+
+```{r}
+library(broom)
+full_predictions <- augment(final_fit, new_data = camels_clean)
+
+```
+
+```{r}
+full_predictions <- full_predictions %>%
+  mutate(residuals = (.pred - q_mean)^2)
+```
+
+```{r}
+library(ggplot2)
+
+map_pred <- ggplot(full_predictions, aes(x = gauge_lon, y = gauge_lat, fill = .pred)) +
+  geom_tile() +
+  coord_fixed(1.3) +
+  scale_fill_viridis_c(option = "C", name = "Predicted q_mean") +
+  labs(title = "Predicted Mean Flow Across CONUS") +
+  theme_minimal()
+
+map_pred
+```
+
+```{r}
+map_resid <- ggplot(full_predictions, aes(x = gauge_lon, y = gauge_lat, fill = residuals)) +
+  geom_tile() +
+  coord_fixed(1.3) +
+  scale_fill_viridis_c(option = "B", name = "Squared Residuals") +
+  labs(title = "Residuals of Predictions Across CONUS") +
+  theme_minimal()
+
+map_resid
+```
+
+```{r}
+library(patchwork)
+
+map_pred + map_resid
+```
+
